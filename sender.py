@@ -1,26 +1,38 @@
 #!/usr/bin/env python3
 """Send CPU load + RAM usage to Arduino Nano (nano1602.ino) via USB Serial.
-Works with OR without psutil (falls back to /proc/stat + /proc/meminfo)."""
+Works with OR without psutil — falls back to /proc/stat + /proc/meminfo.
+Graceful error messages if dependencies are missing."""
 
 import time
 import sys
 import glob
+import os
 
 BAUD = 9600
 UPDATE_INTERVAL = 2  # seconds
 
-# ─── Port detection ──────────────────────────────────────
+# ─── Dependency check ────────────────────────────────────
 
+try:
+    import serial
+except ImportError:
+    print("Error: pyserial not installed.")
+    print("  Install:  pip3 install pyserial")
+    print("  Or:       pip install pyserial")
+    sys.exit(1)
+
+
+# ─── Port detection ──────────────────────────────────────
 
 def find_port():
     """Find available USB-Serial port."""
     for dev in sorted(glob.glob("/dev/ttyUSB*") + glob.glob("/dev/ttyACM*")):
-        return dev
+        if os.path.exists(dev):
+            return dev
     return None
 
 
 # ─── CPU / RAM metrics (no psutil) ────────────────────────
-
 
 def _read_proc_stat():
     """Read CPU idle/total from /proc/stat."""
@@ -37,7 +49,7 @@ _cpu_prev = _read_proc_stat()
 def get_cpu_proc():
     """CPU % over last interval."""
     global _cpu_prev
-    time.sleep(0.3)  # sampling window
+    time.sleep(0.5)
     idle2, total2 = _read_proc_stat()
     idle_d = idle2 - _cpu_prev[0]
     total_d = total2 - _cpu_prev[1]
@@ -54,7 +66,7 @@ def get_ram_proc():
         for line in f:
             parts = line.split()
             mem[parts[0].rstrip(":")] = int(parts[1])
-    total = mem["MemTotal"]
+    total = mem.get("MemTotal", 0)
     avail = mem.get("MemAvailable", mem.get("MemFree", 0))
     if total == 0:
         return 0.0
@@ -72,7 +84,7 @@ if _psutil_available:
     print("[✓] psutil detected, using it for metrics")
 
     def get_cpu():
-        return psutil.cpu_percent(interval=0.3)
+        return psutil.cpu_percent(interval=0.5)
 
     def get_ram():
         return psutil.virtual_memory().percent
@@ -85,8 +97,6 @@ else:
 # ─── Main ────────────────────────────────────────────────
 
 def main():
-    import serial
-
     port = sys.argv[1] if len(sys.argv) > 1 else find_port()
     if not port:
         print("Error: No USB-Serial port found. Use: python3 sender.py /dev/ttyUSB0")
@@ -102,12 +112,24 @@ def main():
             ram = get_ram()
             line = f"CPU:{int(cpu)}|RAM:{int(ram)}\n"
             ser.write(line.encode())
-            response = ser.readline().decode().strip()
+
+            timeout = time.time() + 1
+            response = ""
+            while time.time() < timeout:
+                if ser.in_waiting:
+                    try:
+                        response = ser.readline().decode("utf-8", errors="replace").strip()
+                    except Exception:
+                        response = ""
+                    break
+                time.sleep(0.05)
+
             if response:
                 print(f"  {line.strip()}  ->  {response}")
             else:
                 print(f"  {line.strip()}")
-            time.sleep(max(0, UPDATE_INTERVAL - 0.3))
+
+            time.sleep(max(0, UPDATE_INTERVAL - 0.5))
 
 
 if __name__ == "__main__":

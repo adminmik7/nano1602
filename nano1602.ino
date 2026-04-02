@@ -38,8 +38,17 @@ float ramUsage = 0.0;
 unsigned long lastUpdate = 0;
 bool connected = false;
 
-String buffer = "";
 static const unsigned long TIMEOUT_MS = 5000;
+
+// ─── Буфер (C-стиль, без String, без фрагментации) ─────
+static const byte MAX_BUF = 64;
+char buffer[MAX_BUF];
+byte bufPos = 0;
+
+// ─── Экран ожидания ─────────────────────────────────────
+static bool waitingShown = false;
+static byte dots = 0;
+static unsigned long lastWaitingDraw = 0;
 
 // ─── SETUP ───────────────────────────────────────────────
 void setup() {
@@ -59,7 +68,10 @@ void setup() {
   lcd.print(" Waiting for PC  ");
   delay(2000);
 
-  buffer.reserve(64);
+  // Очищаем буфер
+  memset(buffer, 0, sizeof(buffer));
+  bufPos = 0;
+  waitingShown = false;
 
   Serial.println("Nano1602 PC Monitor v1.0 — Ready");
 }
@@ -70,10 +82,12 @@ void loop() {
   while (Serial.available() > 0) {
     char c = Serial.read();
     if (c == '\n') {
+      buffer[bufPos] = '\0';
       parseData(buffer);
-      buffer = "";
-    } else {
-      buffer += c;
+      bufPos = 0;
+      memset(buffer, 0, sizeof(buffer));
+    } else if (bufPos < MAX_BUF - 1) {
+      buffer[bufPos++] = c;
     }
   }
 
@@ -87,22 +101,31 @@ void loop() {
 }
 
 // ─── Парсинг данных ─────────────────────────────────────
-void parseData(String data) {
-  data.trim();
+void parseData(char* data) {
+  // Ищем CPU: и RAM:
+  char* cpuPtr = strstr(data, "CPU:");
+  char* ramPtr = strstr(data, "RAM:");
 
-  int cpuIdx = data.indexOf("CPU:");
-  int ramIdx = data.indexOf("RAM:");
-
-  if (cpuIdx != -1) {
-    int end = data.indexOf('|', cpuIdx);
-    if (end == -1) end = data.length();
-    cpuLoad = data.substring(cpuIdx + 4, end).toFloat();
+  if (cpuPtr != NULL) {
+    cpuPtr += 4;
+    char* end = strchr(cpuPtr, '|');
+    if (end == NULL) end = cpuPtr + strlen(cpuPtr);
+    char temp[8];
+    int len = min((int)(end - cpuPtr), 7);
+    strncpy(temp, cpuPtr, len);
+    temp[len] = '\0';
+    cpuLoad = atof(temp);
   }
 
-  if (ramIdx != -1) {
-    int end = data.indexOf('|', ramIdx);
-    if (end == -1) end = data.length();
-    ramUsage = data.substring(ramIdx + 4, end).toFloat();
+  if (ramPtr != NULL) {
+    ramPtr += 4;
+    char* end = strchr(ramPtr, '|');
+    if (end == NULL) end = ramPtr + strlen(ramPtr);
+    char temp[8];
+    int len = min((int)(end - ramPtr), 7);
+    strncpy(temp, ramPtr, len);
+    temp[len] = '\0';
+    ramUsage = atof(temp);
   }
 
   lastUpdate = millis();
@@ -110,7 +133,7 @@ void parseData(String data) {
   Serial.println("OK");
 }
 
-// ─── Отрисовка ───────────────────────────────────────────
+// ─── Прогресс-бар ───────────────────────────────────────
 void drawBar(int col, int row, float value, int bars) {
   int filled = map(constrain((int)value, 0, 100), 0, 100, 0, bars);
 
@@ -120,35 +143,59 @@ void drawBar(int col, int row, float value, int bars) {
   }
 }
 
-void updateDisplay() {
-  if (!connected) {
-    // ─── Экран ожидания ────────────────────────────────
-    lcd.clear();
+// ─── Экран ожидания (без lcd.clear!) ────────────────────
+void showWaitingScreen() {
+  // Рисуем только раз, потом обновляем точки
+  if (!waitingShown) {
     lcd.setCursor(0, 0);
     lcd.print("Waiting for PC  ");
-
     lcd.setCursor(0, 1);
     lcd.print("Connecting");
-    static byte dots = 0;
+    waitingShown = true;
+  }
+
+  // Обновляем точки каждые 500мс
+  if (millis() - lastWaitingDraw > 500) {
+    lastWaitingDraw = millis();
+    // Очищаем область точек (6 символов)
+    lcd.setCursor(10, 1);
+    for (int i = 0; i < 6; i++) lcd.print(' ');
+    // Рисуем точки
+    lcd.setCursor(10, 1);
     for (int i = 0; i < (dots % 4); i++) lcd.print('.');
-    for (int i = 0; i < 6 - (dots % 4); i++) lcd.print(' ');
     dots++;
+  }
+}
+
+// ─── Главный цикл дисплея ──────────────────────────────
+void updateDisplay() {
+  if (!connected) {
+    showWaitingScreen();
     return;
+  }
+
+  // Первичная очистка при возврате из режима ожидания
+  if (waitingShown) {
+    lcd.clear();
+    waitingShown = false;
   }
 
   // ─── Строка 1: CPU ───────────────────────────────────
   lcd.setCursor(0, 0);
-  lcd.print("CPU:");
+  // Полностью перезаписываем строку, чтобы не осталось «хвостов»
   int cpu = constrain((int)cpuLoad, 0, 100);
+  lcd.print("CPU:");
+  if (cpu < 10) lcd.print(" ");
   lcd.print(cpu);
   lcd.print("% ");
-  drawBar(9, 0, cpuLoad, 6);
+  drawBar(10, 0, cpuLoad, 6);
 
-  // ─── Строка 2: RAM ───────────────────────────────────  
+  // ─── Строка 2: RAM ───────────────────────────────────
   lcd.setCursor(0, 1);
-  lcd.print("RAM:");
   int ram = constrain((int)ramUsage, 0, 100);
+  lcd.print("RAM:");
+  if (ram < 10) lcd.print(" ");
   lcd.print(ram);
   lcd.print("% ");
-  drawBar(9, 1, ramUsage, 6);
+  drawBar(10, 1, ramUsage, 6);
 }
