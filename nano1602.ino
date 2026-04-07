@@ -146,7 +146,7 @@ void parseData(char* data) {
   }
 
   lastUpdate = millis();
-  connected = true;
+  usbConnected = true;
   Serial.println("OK");
 }
 
