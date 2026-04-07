@@ -1,79 +1,78 @@
 /*
- * PC Monitor — Arduino Nano + LCD1602 (I2C)
- * Line 1: CPU load + progress bar
- * Line 2: RAM usage + progress bar
+ * PC & DHT11 Monitor — Arduino Nano + LCD1602 (I2C)
+ * Line 1: CPU load + RAM usage
+ * Line 2: Temperature + Humidity (from DHT11) or Status
  * Data via USB Serial @ 9600 baud
  *
- * Format:  CPU:XX|RAM:XX
- * Example: CPU:45|RAM:62
+ * Format:  CPU:XX|RAM:XX|TEMP:XX|HUM:XX
  *
  * Wiring:
- *   SDA -> A4
- *   SCL -> A5
- *   VCC -> 5V
- *   GND -> GND
+ *   LCD1602 (I2C): SDA->A4, SCL->A5, VCC->5V, GND->GND
+ *   DHT11: DATA->D2, VCC->5V, GND->GND
  */
 
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
+#include <DHT.h>
 
 // LCD1602 — адрес 0x27 (если не работает, попробуй 0x3F)
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
-// ─── Кастомные символы ───────────────────────────────────
-byte blockFull[8] = {
-  B11111, B11111, B11111, B11111,
-  B11111, B11111, B11111, B11111
-};
-
-byte blockEmpty[8] = {
-  B11111, B10001, B10001, B10001,
-  B10001, B10001, B10001, B11111
-};
+// DHT11 Setup
+#define DHTPIN 2
+#define DHTTYPE DHT11
+DHT dht(DHTPIN, DHTTYPE);
+bool dhtFound = false;
 
 // ─── Состояние ───────────────────────────────────────────
-float cpuLoad  = 0.0;
-float ramUsage = 0.0;
+int cpuLoad  = 0;
+int ramUsage = 0;
+float tempVal = 0.0;
+float humVal = 0.0;
 
 unsigned long lastUpdate = 0;
-bool usbConnected = false; // Статус USB-соединения
+bool usbConnected = false;
 
-static const unsigned long TIMEOUT_MS = 3000; // Таймаут 3 секунды
-
-// ─── Буфер (C-стиль, без String, без фрагментации) ─────
+static const unsigned long TIMEOUT_MS = 3000;
 static const byte MAX_BUF = 64;
 char buffer[MAX_BUF];
 byte bufPos = 0;
-
-// ─── Экран ожидания ─────────────────────────────────────
 static bool waitingShown = false;
-static byte dots = 0;
-static unsigned long lastWaitingDraw = 0;
 
 // ─── SETUP ───────────────────────────────────────────────
 void setup() {
   Serial.begin(9600);
 
-  // LCD
+  // LCD Init
   lcd.init();
   lcd.backlight();
-  lcd.createChar(0, blockFull);
-  lcd.createChar(1, blockEmpty);
-
-  // Приветствие
   lcd.clear();
   lcd.setCursor(0, 0);
-  lcd.print("   PC Monitor    ");
+  lcd.print("  PC & DHT Mon  ");
   lcd.setCursor(0, 1);
-  lcd.print(" Waiting for PC  ");
-  delay(2000);
+  lcd.print("  Starting...   ");
 
-  // Очищаем буфер
-  memset(buffer, 0, sizeof(buffer));
-  bufPos = 0;
-  waitingShown = false;
-
-  Serial.println("Nano1602 PC Monitor v1.0 — Ready");
+  // DHT11 Init
+  dht.begin();
+  delay(1000);
+  // Пробуем прочитать, чтобы понять, подключен ли он
+  float t = dht.readTemperature();
+  if (!isnan(t)) {
+    dhtFound = true;
+    lcd.setCursor(0, 1);
+    lcd.print("  DHT11 Found!   ");
+  } else {
+    dhtFound = false;
+    lcd.setCursor(0, 1);
+    lcd.print(" No DHT11 Sensor ");
+  }
+  delay(1500);
+  
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print(" Waiting for PC ");
+  lcd.setCursor(0, 1);
+  lcd.print("    via USB     ");
 }
 
 // ─── LOOP ────────────────────────────────────────────────
@@ -81,8 +80,6 @@ void loop() {
   // Читаем Serial
   while (Serial.available() > 0) {
     char c = Serial.read();
-    
-    // Если получили хоть что-то, считаем что связь есть
     if (!usbConnected) {
       usbConnected = true;
       lcd.clear();
@@ -119,30 +116,32 @@ void loop() {
 
 // ─── Парсинг данных ─────────────────────────────────────
 void parseData(char* data) {
-  // Ищем CPU: и RAM:
   char* cpuPtr = strstr(data, "CPU:");
   char* ramPtr = strstr(data, "RAM:");
+  char* tempPtr = strstr(data, "TEMP:");
+  char* humPtr = strstr(data, "HUM:");
 
-  if (cpuPtr != NULL) {
-    cpuPtr += 4;
-    char* end = strchr(cpuPtr, '|');
-    if (end == NULL) end = cpuPtr + strlen(cpuPtr);
-    char temp[8];
-    int len = min((int)(end - cpuPtr), 7);
-    strncpy(temp, cpuPtr, len);
-    temp[len] = '\0';
-    cpuLoad = atof(temp);
+  if (cpuPtr) cpuLoad = atoi(cpuPtr + 4);
+  if (ramPtr) ramUsage = atoi(ramPtr + 4);
+  
+  // Обновляем данные с датчика, если они пришли по USB, 
+  // или берем локально, если датчик есть
+  if (tempPtr) {
+    char tempStr[8];
+    strncpy(tempStr, tempPtr + 5, 7);
+    tempStr[7] = '\0';
+    tempVal = atof(tempStr);
+  } else if (dhtFound) {
+    tempVal = dht.readTemperature();
   }
-
-  if (ramPtr != NULL) {
-    ramPtr += 4;
-    char* end = strchr(ramPtr, '|');
-    if (end == NULL) end = ramPtr + strlen(ramPtr);
-    char temp[8];
-    int len = min((int)(end - ramPtr), 7);
-    strncpy(temp, ramPtr, len);
-    temp[len] = '\0';
-    ramUsage = atof(temp);
+  
+  if (humPtr) {
+    char humStr[8];
+    strncpy(humStr, humPtr + 4, 7);
+    humStr[7] = '\0';
+    humVal = atof(humStr);
+  } else if (dhtFound) {
+    humVal = dht.readHumidity();
   }
 
   lastUpdate = millis();
@@ -150,69 +149,34 @@ void parseData(char* data) {
   Serial.println("OK");
 }
 
-// ─── Прогресс-бар ───────────────────────────────────────
-void drawBar(int col, int row, float value, int bars) {
-  int filled = map(constrain((int)value, 0, 100), 0, 100, 0, bars);
-
-  lcd.setCursor(col, row);
-  for (int i = 0; i < bars; i++) {
-    lcd.write((byte)(i < filled ? 0 : 1));
-  }
-}
-
-// ─── Экран ожидания (без lcd.clear!) ────────────────────
-void showWaitingScreen() {
-  // Рисуем только раз, потом обновляем точки
-  if (!waitingShown) {
-    lcd.setCursor(0, 0);
-    lcd.print("Waiting for PC  ");
-    lcd.setCursor(0, 1);
-    lcd.print("Connecting");
-    waitingShown = true;
-  }
-
-  // Обновляем точки каждые 500мс
-  if (millis() - lastWaitingDraw > 500) {
-    lastWaitingDraw = millis();
-    // Очищаем область точек (6 символов)
-    lcd.setCursor(10, 1);
-    for (int i = 0; i < 6; i++) lcd.print(' ');
-    // Рисуем точки
-    lcd.setCursor(10, 1);
-    for (int i = 0; i < (dots % 4); i++) lcd.print('.');
-    dots++;
-  }
-}
-
 // ─── Главный цикл дисплея ──────────────────────────────
 void updateDisplay() {
-  if (!usbConnected) {
-    showWaitingScreen();
-    return;
-  }
+  if (!usbConnected) return;
 
-  // Первичная очистка при возврате из режима ожидания
-  if (waitingShown) {
-    lcd.clear();
-    waitingShown = false;
-  }
-
-  // ─── Строка 1: CPU ───────────────────────────────────
+  // Строка 1: CPU и RAM
   lcd.setCursor(0, 0);
-  // Полностью перезаписываем строку, чтобы не осталось «хвостов»
-  int cpu = constrain((int)cpuLoad, 0, 100);
   lcd.print("CPU:");
-  if (cpu < 10) lcd.print(" ");
-  lcd.print(cpu);
+  if (cpuLoad < 10) lcd.print(" ");
+  lcd.print(cpuLoad);
+  lcd.print("%  RAM:");
+  if (ramUsage < 10) lcd.print(" ");
+  lcd.print(ramUsage);
   lcd.print("% ");
-  drawBar(10, 0, cpuLoad, 6);
 
-  // ─── Строка 2: RAM ───────────────────────────────────
+  // Строка 2: Температура и Влажность или статус
   lcd.setCursor(0, 1);
-  int ram = constrain((int)ramUsage, 0, 100);
-  lcd.print("RAM:");
-  if (ram < 10) lcd.print(" ");
-  lcd.print(ram);
-  lcd.print("% ");
-  drawBar(10, 1, ramUsage, 6);
+  if (dhtFound) {
+    if (isnan(tempVal) || isnan(humVal)) {
+       lcd.print("Sensor Error!   ");
+    } else {
+       lcd.print("T:");
+       lcd.print(tempVal, 1);
+       lcd.print((char)223); // Градус
+       lcd.print("C  H:");
+       lcd.print(humVal, 1);
+       lcd.print("% ");
+    }
+  } else {
+    lcd.print(" No DHT11 Sensor ");
+  }
 }
