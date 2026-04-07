@@ -158,10 +158,10 @@ void updateDisplay() {
   lcd.print("CPU:");
   if (cpuLoad < 10) lcd.print(" ");
   lcd.print(cpuLoad);
-  lcd.print("%  RAM:");
+  lcd.print("% RAM:");
   if (ramUsage < 10) lcd.print(" ");
   lcd.print(ramUsage);
-  lcd.print("% ");
+  lcd.print("%  "); // Лишние пробелы для очистки хвостов
 
   // Строка 2: Температура и Влажность или статус
   lcd.setCursor(0, 1);
@@ -172,9 +172,9 @@ void updateDisplay() {
        lcd.print("T:");
        lcd.print(tempVal, 1);
        lcd.print((char)223); // Градус
-       lcd.print("C  H:");
+       lcd.print("C H:");
        lcd.print(humVal, 1);
-       lcd.print("% ");
+       lcd.print("%  "); // Лишние пробелы для очистки хвостов
     }
   } else {
     lcd.print(" No DHT11 Sensor ");
