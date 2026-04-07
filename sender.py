@@ -146,7 +146,10 @@ def main():
         try:
             with serial.Serial(port, BAUD, timeout=1) as ser:
                 time.sleep(2)  # wait for Arduino reset
-                ser.reset_input_buffer()
+                try:
+                    ser.reset_input_buffer()
+                except (serial.SerialException, OSError, Exception):
+                    pass # Игнорируем ошибку сброса буфера при первом подключении
                 print(f"[+] Connected on {port} @ {BAUD} baud")
 
                 while True:
